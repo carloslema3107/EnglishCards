@@ -696,6 +696,7 @@ const HEADER_ALIASES={english:'english',ingles:'english',word:'english',palabra:
   superlative:'superlative',superlativo:'superlative',
   phrasalverb:'phrasalVerb',verbofrasal:'phrasalVerb',
   particle:'particle',particula:'particle',
+  separable:'separable',separavel:'separable',
   modal:'modal',
   conjtype:'conjType',tipodeconjuncion:'conjType',
   register:'register',registro:'register',
@@ -730,20 +731,28 @@ function parseHtmlBackTags(tagField){
   const parts=(tagField||'').split(',').map(t=>t.trim()).filter(Boolean);
   const wtReverse={};
   Object.keys(WORDTYPE_LABEL).forEach(k=>{ wtReverse[WORDTYPE_LABEL[k].toLowerCase()]=k; });
-  let level=null, topic=null, wordType=null, rawFirst=null;
+  wtReverse['idiom']='phrase';
+  wtReverse['phrasal verb']='verb';
+  wtReverse['false friend']='other';
+  let level=null, topic=null, wordType=null, rawFirst=null, specialTag=null;
   parts.forEach((t,i)=>{
     const clean=stripLeadingSymbols(t);
     const key=clean.toLowerCase();
-    if(wtReverse[key]){ wordType=wtReverse[key]; return; }
+    if(wtReverse[key]){ wordType=wtReverse[key]; if(key==='idiom'||key==='phrasal verb'||key==='false friend') specialTag=key; return; }
     const lvlMatch=clean.match(/^(A1|A2|B1\.1|B1\.2|B1|B2|C1|C2)$/i);
     if(lvlMatch){ level=lvlMatch[1].toUpperCase(); return; }
     if(i===0){ rawFirst=clean; return; }
     topic=clean;
   });
-  return {level, topic, wordType, rawFirst};
+  return {level, topic, wordType, rawFirst, specialTag};
 }
 const MODAL_VERBS=['can','could','may','might','must','shall','should','will','would'];
-function parseHtmlBack(html, wordType, englishWord){
+const WT_LABEL_WORDS=(function(){
+  const s=new Set(Object.values(WORDTYPE_LABEL).map(v=>v.toLowerCase()));
+  s.add('idiom'); s.add('phrasal verb'); s.add('false friend');
+  return s;
+})();
+function parseHtmlBack(html, wordType, englishWord, specialTag){
   const out={};
   const bMatches=[...html.matchAll(/<b>(.*?)<\/b>/gs)];
   if(bMatches.length) out.spanish=decodeHtmlBits(stripHtmlTags(bMatches[0][1]));
@@ -763,6 +772,21 @@ function parseHtmlBack(html, wordType, englishWord){
   if(pluralMatch) out.plural=decodeHtmlBits(pluralMatch[1]);
   const ingMatch=html.match(/<small>-ing<\/small>\s*([^&<]+)/);
   const ingForm=ingMatch?decodeHtmlBits(ingMatch[1]):null;
+  const registerMatch=html.match(/<small>Register:\s*<\/small>\s*<b>([^<]+)<\/b>/);
+  if(registerMatch) out.register=decodeHtmlBits(registerMatch[1]).toLowerCase();
+  const synonymMatch=html.match(/<small>Synonym:\s*<\/small>\s*<b>([^<]+)<\/b>/);
+  const synonym=synonymMatch?decodeHtmlBits(synonymMatch[1]):null;
+  const collocMatch=html.match(/<small>Collocations?:\s*<\/small>\s*<b>([^<]+)<\/b>/);
+  const colloc=collocMatch?decodeHtmlBits(collocMatch[1]):null;
+  const prepMatch=html.match(/<small>Preposition:\s*<\/small>\s*<b>([^<]+)<\/b>/);
+  const depPrep=prepMatch?decodeHtmlBits(prepMatch[1]):null;
+  const confuseMatch=html.match(/<small>[^<]*Se confunde con:\s*<\/small>\s*<b>([^<]+)<\/b>/);
+  const confuseWith=confuseMatch?decodeHtmlBits(confuseMatch[1]):null;
+  const particleMatch=html.match(/Particle:\s*([a-zA-Z]+)/);
+  if(particleMatch){ out.phrasalVerb=true; out.particle=particleMatch[1]; }
+  else if(specialTag==='phrasal verb'){ out.phrasalVerb=true; }
+  if(/\binseparable\b/i.test(html)) out.separable=false;
+  else if(/\bseparable\b/i.test(html)) out.separable=true;
   const exMatch=html.match(/<i>[\u201c"]*(.*?)[\u201d"]*<\/i>/s);
   if(exMatch){ const ex=decodeHtmlBits(stripHtmlTags(exMatch[1])).replace(/^["\u201c]+|["\u201d]+$/g,'').trim(); if(ex) out.example=ex; }
   const smallMatches=[...html.matchAll(/<small>(.*?)<\/small>/gs)];
@@ -771,13 +795,20 @@ function parseHtmlBack(html, wordType, englishWord){
   smallMatches.forEach(m=>{
     const raw=decodeHtmlBits(stripHtmlTags(m[1]));
     if(!raw || labelOnly.test(raw)) return;
-    let t=raw.replace(/^[\u2713\u26a0]\s*/,'').replace(/^(Regular|Irregular)\s*[\u00b7]*\s*/i,'').trim();
-    if(t) leftover.push(t);
+    if(WT_LABEL_WORDS.has(stripLeadingSymbols(raw).toLowerCase())) return;
+    let t=raw.replace(/^[\u2713\u26a0]\s*/,'').replace(/^(Regular|Irregular)\s*[\u00b7]*\s*/i,'')
+      .replace(/Particle:\s*[a-zA-Z]+\s*[\u00b7]?\s*/i,'')
+      .trim();
+    if(t && !/:$/.test(t)) leftover.push(t);
   });
   if(ingForm) leftover.push('-ing: '+ingForm);
+  if(synonym) leftover.push('Synonym: '+synonym);
+  if(colloc) leftover.push('Collocation: '+colloc);
+  if(depPrep) leftover.push('+ '+depPrep+' (dependent preposition)');
+  if(confuseWith) leftover.unshift('\u26a0\ufe0f False friend \u2014 not "'+confuseWith+'"');
   if(leftover.length) out.notes=leftover.join(' \u00b7 ');
   if(wordType==='verb'){
-    if(englishWord && englishWord.trim().indexOf(' ')>=0){
+    if(!out.phrasalVerb && englishWord && englishWord.trim().indexOf(' ')>=0){
       const parts=englishWord.trim().split(/\s+/);
       out.phrasalVerb=true; out.particle=parts[parts.length-1];
     }
@@ -792,9 +823,9 @@ function parseHtmlBackRows(rows, forceLevel){
     const [frontRaw, backRaw, tagsRaw]=r;
     if(!frontRaw || !frontRaw.trim()){ invalidRows++; return; }
     const english=frontRaw.trim();
-    const {level, topic, wordType}=parseHtmlBackTags(tagsRaw);
+    const {level, topic, wordType, specialTag}=parseHtmlBackTags(tagsRaw);
     const wt=wordType||'other';
-    const backData=parseHtmlBack(backRaw||'', wt, english);
+    const backData=parseHtmlBack(backRaw||'', wt, english, specialTag);
     const obj=Object.assign({english, wordType:wt, topic}, backData);
     const levelId=forceLevel || normalizeLevel(level);
     const key=levelId?('ID:'+levelId):('RAW:'+(level||'(sin nivel)'));
@@ -1377,7 +1408,12 @@ function cardMetaParts(c){
     if(c.regularity==='regular') parts.push(['✓ Regular', 'var(--moss)']);
     else if(c.regularity==='irregular') parts.push(['⚠️ Irregular', 'var(--ochre)']);
     if(c.modal) parts.push(['Modal verb', 'var(--purple)']);
-    if(c.phrasalVerb && c.phrasalVerb!=='false' && c.phrasalVerb!=='no' && c.phrasalVerb!=='0') parts.push(['Phrasal verb'+(c.particle?' ('+c.particle+')':''), null]);
+    if(c.phrasalVerb && c.phrasalVerb!=='false' && c.phrasalVerb!=='no' && c.phrasalVerb!=='0'){
+      let lbl='Phrasal verb'+(c.particle?' ('+c.particle+')':'');
+      if(c.separable===true) lbl+=' \u00b7 separable';
+      else if(c.separable===false) lbl+=' \u00b7 inseparable';
+      parts.push([lbl, null]);
+    }
     if(c.pastSimple || c.pastParticiple) parts.push([[c.pastSimple,c.pastParticiple].filter(Boolean).join(' \u00b7 '), null]);
   } else if(c.wordType==='noun'){
     if(c.plural) parts.push(['Plural: '+c.plural, null]);
