@@ -717,10 +717,98 @@ function normalizeLevel(v){
   return null;
 }
 
+/* ---------- Headerless HTML-back export support (AlgoApp/ankienglish style: Front, Back-HTML, Tags) ---------- */
+function decodeHtmlBits(s){ return s.replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/&middot;/g,'\u00b7').replace(/\s+/g,' ').trim(); }
+function stripHtmlTags(s){ return s.replace(/<[^>]+>/g,''); }
+function stripLeadingSymbols(s){ return s.replace(/^[^\w(]+/,'').trim(); }
+function looksLikeHtmlBackExport(rows){
+  if(!rows.length) return false;
+  const s=rows[0];
+  return s.length===3 && /<b>/.test(s[1]||'');
+}
+function parseHtmlBackTags(tagField){
+  const parts=(tagField||'').split(',').map(t=>t.trim()).filter(Boolean);
+  const wtReverse={};
+  Object.keys(WORDTYPE_LABEL).forEach(k=>{ wtReverse[WORDTYPE_LABEL[k].toLowerCase()]=k; });
+  let level=null, topic=null, wordType=null, rawFirst=null;
+  parts.forEach((t,i)=>{
+    const clean=stripLeadingSymbols(t);
+    const key=clean.toLowerCase();
+    if(wtReverse[key]){ wordType=wtReverse[key]; return; }
+    const lvlMatch=clean.match(/^(A1|A2|B1\.1|B1\.2|B1|B2|C1|C2)$/i);
+    if(lvlMatch){ level=lvlMatch[1].toUpperCase(); return; }
+    if(i===0){ rawFirst=clean; return; }
+    topic=clean;
+  });
+  return {level, topic, wordType, rawFirst};
+}
+const MODAL_VERBS=['can','could','may','might','must','shall','should','will','would'];
+function parseHtmlBack(html, wordType, englishWord){
+  const out={};
+  const bMatches=[...html.matchAll(/<b>(.*?)<\/b>/gs)];
+  if(bMatches.length) out.spanish=decodeHtmlBits(stripHtmlTags(bMatches[0][1]));
+  if(/\u26a0\s*Irregular/.test(html)) out.regularity='irregular';
+  else if(/\u2713\s*Regular/.test(html)) out.regularity='regular';
+  const pastMatch=html.match(/<small>Past<\/small>\s*([^&<]+)/);
+  if(pastMatch) out.pastSimple=decodeHtmlBits(pastMatch[1]);
+  const partMatch=html.match(/<small>Part\.<\/small>\s*([^&<]+)/);
+  if(partMatch) out.pastParticiple=decodeHtmlBits(partMatch[1]);
+  const compMatch=html.match(/<small>Comp\.\s*<\/small>\s*<b>([^<]+)<\/b>/);
+  if(compMatch) out.comparative=decodeHtmlBits(compMatch[1]);
+  const superlMatch=html.match(/<small>Superl\.\s*<\/small>\s*<b>([^<]+)<\/b>/);
+  if(superlMatch) out.superlative=decodeHtmlBits(superlMatch[1]);
+  const typeMatch=html.match(/<small>Type:\s*<\/small>\s*<b>([^<]+)<\/b>/);
+  if(typeMatch) out.conjType=decodeHtmlBits(typeMatch[1]).toLowerCase()+' conjunction';
+  const pluralMatch=html.match(/<small>Plural\s*<\/small>\s*<b>([^<]+)<\/b>/);
+  if(pluralMatch) out.plural=decodeHtmlBits(pluralMatch[1]);
+  const ingMatch=html.match(/<small>-ing<\/small>\s*([^&<]+)/);
+  const ingForm=ingMatch?decodeHtmlBits(ingMatch[1]):null;
+  const exMatch=html.match(/<i>[\u201c"]*(.*?)[\u201d"]*<\/i>/s);
+  if(exMatch){ const ex=decodeHtmlBits(stripHtmlTags(exMatch[1])).replace(/^["\u201c]+|["\u201d]+$/g,'').trim(); if(ex) out.example=ex; }
+  const smallMatches=[...html.matchAll(/<small>(.*?)<\/small>/gs)];
+  const labelOnly=/^(Past|Part\.|Comp\.|Superl\.|Type:|Plural|-ing)$/;
+  const leftover=[];
+  smallMatches.forEach(m=>{
+    const raw=decodeHtmlBits(stripHtmlTags(m[1]));
+    if(!raw || labelOnly.test(raw)) return;
+    let t=raw.replace(/^[\u2713\u26a0]\s*/,'').replace(/^(Regular|Irregular)\s*[\u00b7]*\s*/i,'').trim();
+    if(t) leftover.push(t);
+  });
+  if(ingForm) leftover.push('-ing: '+ingForm);
+  if(leftover.length) out.notes=leftover.join(' \u00b7 ');
+  if(wordType==='verb'){
+    if(englishWord && englishWord.trim().indexOf(' ')>=0){
+      const parts=englishWord.trim().split(/\s+/);
+      out.phrasalVerb=true; out.particle=parts[parts.length-1];
+    }
+    if(englishWord && MODAL_VERBS.indexOf(englishWord.trim().toLowerCase())>=0) out.modal=true;
+  }
+  return out;
+}
+function parseHtmlBackRows(rows, forceLevel){
+  const groups={};
+  let invalidRows=0;
+  rows.forEach(r=>{
+    const [frontRaw, backRaw, tagsRaw]=r;
+    if(!frontRaw || !frontRaw.trim()){ invalidRows++; return; }
+    const english=frontRaw.trim();
+    const {level, topic, wordType}=parseHtmlBackTags(tagsRaw);
+    const wt=wordType||'other';
+    const backData=parseHtmlBack(backRaw||'', wt, english);
+    const obj=Object.assign({english, wordType:wt, topic}, backData);
+    const levelId=forceLevel || normalizeLevel(level);
+    const key=levelId?('ID:'+levelId):('RAW:'+(level||'(sin nivel)'));
+    if(!groups[key]) groups[key]={levelId, rawLevel:level, rows:[]};
+    groups[key].rows.push(obj);
+  });
+  return {groups:Object.values(groups), invalidRows};
+}
+
 function parseAndGroupCSV(text, forceLevel){
   const delim=detectDelimiter(text);
   const rows=parseCSV(text, delim).filter(r=>r.some(c=>c.trim()!==''));
   if(!rows.length) return {groups:[], invalidRows:0};
+  if(looksLikeHtmlBackExport(rows)) return parseHtmlBackRows(rows, forceLevel);
   const headers=rows[0].map(normHeader);
   const groups={};
   let invalidRows=0;
