@@ -1524,7 +1524,11 @@ function tjGridCard(c){
 function richDetailHTML(c){
   let html='';
   cardMetaParts(c).forEach(m=>{ html+='<div style="font-size:12px;margin-top:6px;'+(m[1]?'color:'+m[1]+';font-weight:700;':'color:var(--ink-soft);')+'">'+m[0]+'</div>'; });
-  if(c.notes) html+='<div style="font-size:12px;color:var(--ink-soft);margin-top:10px;">'+c.notes+'</div>';
+  if(c.notes){
+    c.notes.split(' \u00b7 ').forEach(seg=>{
+      if(seg.trim()) html+='<div style="font-size:12px;color:var(--ink-soft);margin-top:6px;">'+seg.trim()+'</div>';
+    });
+  }
   return html;
 }
 function openCardDetail(cardId){
